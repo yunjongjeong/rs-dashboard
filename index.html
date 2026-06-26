@@ -151,6 +151,12 @@
 
   .hidecol{display:none!important}
   .hidden{display:none!important}
+  .mom-grid{display:grid; grid-template-columns:1fr 1fr; gap:14px}
+  .delta{font-weight:800; font-variant-numeric:tabular-nums}
+  .delta.up{color:#1f8a5b} .delta.down{color:#c0394f}
+  .empty{background:var(--panel); border:1px dashed var(--line); border-radius:var(--r); padding:34px 22px; text-align:center; color:var(--muted); font-size:13px; line-height:1.6}
+  .empty b{color:var(--ink2)}
+  @media(max-width:760px){.mom-grid{grid-template-columns:1fr}}
   @media(max-width:900px){
     .cards{grid-template-columns:1fr} .rs-grid,.quads{grid-template-columns:1fr}
     .wrap{padding:20px 14px 56px} .brand h1{font-size:21px}
@@ -184,6 +190,7 @@
     <button data-view="theme" aria-pressed="true">테마 비중</button>
     <button data-view="detail" aria-pressed="false">종목 상세 · RS</button>
     <button data-view="universe" aria-pressed="false">유니버스 RS</button>
+    <button data-view="momentum" aria-pressed="false">RS 변화 Top</button>
   </div>
 
   <!-- ============ THEME VIEW ============ -->
@@ -307,6 +314,33 @@
     <div class="note"><span>전체 종목을 매일 자동 갱신하려면 GitHub Actions 자동화가 필요합니다(아래 안내). 연결 전에는 샘플로 표시됩니다.</span></div>
   </section>
 
+  <!-- ============ RS MOMENTUM (Δ) VIEW ============ -->
+  <section id="momentumView" class="hidden">
+    <div class="panel">
+      <h2>RS 상승 / 하락 Top — 모멘텀이 바뀌는 종목</h2>
+      <div class="ph-sub">최근 <span id="momLag">2</span>거래일 동안 RS가 가장 크게 오른/내린 종목 · 화살표는 이전 → 현재 위치(분면 이동) · <span id="momMeta">샘플</span></div>
+      <div class="comet-legend"><span><i style="background:#1f8a5b"></i>RS 상승</span><span><i style="background:#c0394f"></i>RS 하락</span><span style="margin-left:auto;color:#aeb4c2">개선 분면으로 올라오면 차기 주도주, 약화 분면으로 내려가면 점검 대상</span></div>
+      <div class="comet-wrap" id="momComet"></div>
+    </div>
+    <div class="controls">
+      <span class="ctl-label">기준</span>
+      <div class="seg" id="momBasisSeg" role="group" aria-label="Δ 기준">
+        <button data-mbasis="short" aria-pressed="true">단기 Δ</button>
+        <button data-mbasis="long" aria-pressed="false">장기 Δ</button>
+        <button data-mbasis="combo" aria-pressed="false">종합 Δ</button>
+      </div>
+      <span class="ctl-label" style="margin-left:8px">시장</span>
+      <div class="seg" id="momMktSeg" role="group" aria-label="시장 필터">
+        <button data-mmkt="all" aria-pressed="true">전체</button>
+        <button data-mmkt="한국" aria-pressed="false">한국</button>
+        <button data-mmkt="미국" aria-pressed="false">미국</button>
+        <button data-mmkt="ETF" aria-pressed="false">ETF</button>
+      </div>
+    </div>
+    <div class="mom-grid" id="momentum"></div>
+  </section>
+
+
 
 </div>
 
@@ -412,7 +446,7 @@ function normCdf(z){const t=1/(1+0.2316419*Math.abs(z));const d=0.3989423*Math.e
 function rsScore(L,S){return Math.max(1,Math.min(99,Math.round(normCdf((0.55*L+0.45*S)/15)*98)+1));}
 
 let DATA=SNAPSHOT.slice(), HOLD=HOLD_SNAP.slice(), UNI=[];
-let state={view:"theme",pf:"all",reg:"all",hreg:"한국",sort:"theme",umkt:"all",usort:"strong"};
+let state={view:"theme",pf:"all",reg:"all",hreg:"한국",sort:"theme",umkt:"all",usort:"strong",mbasis:"short",mmkt:"all"};
 let uniLoaded=false;
 const PFI={T:0,B:1,K:2};
 
@@ -556,15 +590,25 @@ const UNI_SAMPLE=[
  {code:"TSLA",name:"테슬라",market:"미국",longZ:-3,shortZ:-4,longRS:44,shortRS:46,class:"lag"},
  {code:"AAPL",name:"애플",market:"미국",longZ:-9,shortZ:-7,longRS:36,shortRS:40,class:"lag"}
 ];
+// 샘플에 Δ(모멘텀 변화)·이전 위치 보강 — 미리보기용
+UNI_SAMPLE.forEach(u=>{ if(u.dShort===undefined){
+  const d={improv:[38,12],weak:[-34,8],lead:[7,16],lag:[-9,-13]}[u.class]||[0,0];
+  u.dShort=d[0]; u.dLong=d[1];
+  u.pShortZ=+(u.shortZ-u.dShort*0.22).toFixed(1);
+  u.pLongZ =+(u.longZ -u.dLong*0.22).toFixed(1);
+}});
 async function loadUniverse(){
  const meta=document.getElementById("uniMeta");
+ const mMeta=document.getElementById("momMeta"), mLag=document.getElementById("momLag");
  try{
   const r=await fetch(CONFIG.UNIVERSE_JSON_URL,{cache:"no-store"});
   if(!r.ok)throw new Error("no file");
   const j=await r.json();
   UNI=j.items||[]; uniLoaded=UNI.length>0;
   meta.textContent=`전체 ${j.count||UNI.length}종목 · 업데이트 ${j.updated||""}`;
- }catch(e){ UNI=UNI_SAMPLE.slice(); uniLoaded=false; meta.textContent="샘플 (Actions 실행 전)"; }
+  if(mMeta)mMeta.textContent=`전체 ${j.count||UNI.length}종목 · 업데이트 ${j.updated||""}`;
+  if(mLag&&j.lag)mLag.textContent=j.lag;
+ }catch(e){ UNI=UNI_SAMPLE.slice(); uniLoaded=false; meta.textContent="샘플 (Actions 실행 전)"; if(mMeta)mMeta.textContent="샘플"; }
 }
 function uniFiltered(){return state.umkt==="all"?UNI:UNI.filter(u=>u.market===state.umkt);}
 function renderUniComet(){
@@ -611,13 +655,69 @@ function renderUniTable(){
 }
 async function renderUniverse(){ if(!UNI.length) await loadUniverse(); renderUniComet(); renderUniTable(); }
 
+/* ---------- RS 변화 Top (Δ) ---------- */
+function momBasis(u){return state.mbasis==="long"?(u.dLong||0):state.mbasis==="combo"?((u.dLong||0)+(u.dShort||0)):(u.dShort||0);}
+function momFiltered(){const f=state.mmkt==="all"?UNI:UNI.filter(u=>u.market===state.mmkt);return f.filter(u=>u.dShort!==undefined);}
+function renderMomComet(up,down){
+ const W=700,H=400,pad=42,xmin=-40,xmax=40,ymin=-40,ymax=40;
+ const sx=v=>pad+(v-xmin)/(xmax-xmin)*(W-2*pad), sy=v=>H-pad-(v-ymin)/(ymax-ymin)*(H-2*pad);
+ const x0=sx(0),y0=sy(0);
+ const arrow=(u,col)=>{const x1=sx(u.pLongZ!=null?u.pLongZ:u.longZ),y1=sy(u.pShortZ!=null?u.pShortZ:u.shortZ),x2=sx(u.longZ),y2=sy(u.shortZ);
+   const a=Math.atan2(y2-y1,x2-x1),hl=6;
+   return `<line x1="${x1.toFixed(1)}" y1="${y1.toFixed(1)}" x2="${x2.toFixed(1)}" y2="${y2.toFixed(1)}" stroke="${col}" stroke-width="1.6" opacity="0.7"/>
+   <circle cx="${x1.toFixed(1)}" cy="${y1.toFixed(1)}" r="2" fill="${col}" opacity="0.4"/>
+   <path d="M${x2.toFixed(1)} ${y2.toFixed(1)} L${(x2-hl*Math.cos(a-0.45)).toFixed(1)} ${(y2-hl*Math.sin(a-0.45)).toFixed(1)} L${(x2-hl*Math.cos(a+0.45)).toFixed(1)} ${(y2-hl*Math.sin(a+0.45)).toFixed(1)} Z" fill="${col}"/>
+   <text x="${(x2+6).toFixed(1)}" y="${(y2+3).toFixed(1)}" font-size="9.5" font-weight="700" fill="#2a3354">${u.name}</text>`;};
+ const arrows=up.map(u=>arrow(u,"#1f8a5b")).join("")+down.map(u=>arrow(u,"#c0394f")).join("");
+ const q=(x,y,t,c)=>`<text x="${x}" y="${y}" font-size="12" font-weight="800" fill="${c}" opacity="0.5">${t}</text>`;
+ document.getElementById("momComet").innerHTML=`<svg width="100%" viewBox="0 0 ${W} ${H}" style="min-width:560px" role="img" aria-label="RS 움직임">
+   <rect x="${pad}" y="${pad}" width="${W-2*pad}" height="${H-2*pad}" fill="#fcfdff" stroke="#eef1f7"/>
+   <line x1="${x0}" y1="${pad}" x2="${x0}" y2="${H-pad}" stroke="#c2c8d4" stroke-dasharray="4 4"/>
+   <line x1="${pad}" y1="${y0}" x2="${W-pad}" y2="${y0}" stroke="#c2c8d4" stroke-dasharray="4 4"/>
+   ${q(W-118,pad+18,"주도 (Leading)","#2e5bff")}${q(pad+8,pad+18,"개선 (Improving)","#1f8a5b")}
+   ${q(W-128,H-pad-8,"약화 (Weakening)","#c0394f")}${q(pad+8,H-pad-8,"소외 (Lagging)","#4b5366")}
+   <text x="${W/2}" y="${H-8}" font-size="11" fill="#8a90a0" text-anchor="middle">장기 RS</text>
+   <text x="14" y="${H/2}" font-size="11" fill="#8a90a0" text-anchor="middle" transform="rotate(-90 14 ${H/2})">단기 RS</text>
+   ${arrows}</svg>`;
+}
+function momTable(title,items,dir){
+ const rows=items.map((u,i)=>{const C=CLS[u.class]||CLS.none;const d=momBasis(u);
+  return `<tr><td class="metric" style="color:#aeb4c2;width:30px">${i+1}</td>
+   <td><span class="nm">${u.name}</span><span class="code">${u.code}</span></td>
+   <td class="metric" style="color:#8a90a0">${u.market}</td>
+   <td><span class="rs-pill" style="background:${C.hex}">${C.ko}</span></td>
+   <td class="metric">${u.shortRS}</td>
+   <td class="metric delta ${d>=0?'up':'down'}">${d>=0?'+':''}${d}</td></tr>`;}).join("");
+ const hex=dir==="up"?"#1f8a5b":"#c0394f";
+ return `<div class="htbl"><div class="rhead"><span class="tag" style="background:${hex}">${dir==="up"?"상승":"하락"}</span><span class="name" style="color:${hex}">${title}</span></div>
+  <div class="scroller"><table style="min-width:300px"><thead><tr><th>#</th><th>종목</th><th>시장</th><th>등급</th><th>단기RS</th><th>Δ</th></tr></thead><tbody>${rows}</tbody></table></div></div>`;
+}
+function renderMomentum(){
+ const box=document.getElementById("momentum");
+ const items=momFiltered();
+ if(!items.length){
+  document.getElementById("momComet").innerHTML="";
+  box.innerHTML=`<div class="empty" style="grid-column:1/-1"><b>RS 변화(Δ) 데이터가 아직 없어요.</b><br>이 화면은 오늘과 며칠 전 RS를 비교한 값이 필요합니다.<br>최신 <b>rs/compute_rs.py</b>로 교체한 뒤 <b>Actions → RS 일일 갱신 → Run workflow</b>를 한 번 더 실행하면 채워집니다.</div>`;
+  return;
+ }
+ const sorted=[...items].sort((a,b)=>momBasis(b)-momBasis(a));
+ const up=sorted.filter(u=>momBasis(u)>0).slice(0,10);
+ const down=sorted.filter(u=>momBasis(u)<0).slice(-10).reverse();
+ renderMomComet(up,down);
+ const bn={short:"단기",long:"장기",combo:"종합"}[state.mbasis];
+ box.innerHTML=momTable(`${bn} RS 상승 Top ${up.length}`,up,"up")+momTable(`${bn} RS 하락 Top ${down.length}`,down,"down");
+}
+async function renderMomentumView(){ if(!UNI.length) await loadUniverse(); renderMomentum(); }
+
 /* ---------- 화면 전환 ---------- */
 function setView(v){state.view=v;
  document.getElementById("themeView").classList.toggle("hidden",v!=="theme");
  document.getElementById("detailView").classList.toggle("hidden",v!=="detail");
  document.getElementById("universeView").classList.toggle("hidden",v!=="universe");
+ document.getElementById("momentumView").classList.toggle("hidden",v!=="momentum");
  if(v==="detail"){renderComet();renderHoldings();}
  else if(v==="universe"){renderUniverse();}
+ else if(v==="momentum"){renderMomentumView();}
  else{renderCards();renderRegions();}}
 
 /* ---------- 로드 ---------- */
@@ -637,6 +737,7 @@ async function load(){
  icon.classList.remove("spin");
  if(state.view==="detail"){renderComet();renderHoldings();}
  else if(state.view==="universe"){renderUniverse();}
+ else if(state.view==="momentum"){renderMomentumView();}
  else{renderCards();renderRegions();}
 }
 
@@ -645,11 +746,13 @@ function wireSeg(id,key,attr){document.getElementById(id).addEventListener("clic
  state[key]=b.dataset[attr];[...e.currentTarget.children].forEach(x=>x.setAttribute("aria-pressed",x===b));
  if(state.view==="detail"){renderComet();renderHoldings();}
  else if(state.view==="universe"){renderUniComet();renderUniTable();}
+ else if(state.view==="momentum"){renderMomentum();}
  else{renderCards();renderRegions();}});}
 document.querySelector(".viewtabs").addEventListener("click",e=>{const b=e.target.closest("button");if(!b)return;
  [...e.currentTarget.children].forEach(x=>x.setAttribute("aria-pressed",x===b));setView(b.dataset.view);});
 wireSeg("pfSeg","pf","pf");wireSeg("regSeg","reg","reg");wireSeg("hRegSeg","hreg","hreg");wireSeg("hSortSeg","sort","sort");
 wireSeg("uniMktSeg","umkt","umkt");wireSeg("uniSortSeg","usort","usort");
+wireSeg("momBasisSeg","mbasis","mbasis");wireSeg("momMktSeg","mmkt","mmkt");
 document.getElementById("refresh").addEventListener("click",()=>{uniLoaded=false;UNI=[];load();});
 load();
 if(CONFIG.REFRESH_MINUTES>0)setInterval(load,CONFIG.REFRESH_MINUTES*60000);
