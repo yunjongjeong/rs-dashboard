@@ -100,6 +100,7 @@ def fetch_close(code, start):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--limit", type=int, default=None, help="테스트용 종목 수 제한")
+    ap.add_argument("--lag", type=int, default=2, help="RS Δ 비교 시점(거래일 전)")
     ap.add_argument("--out", default="data/rs.json")
     args = ap.parse_args()
 
@@ -108,6 +109,7 @@ def main():
 
     recs = []
     ok = fail = 0
+    LAG = args.lag
     for i, (code, name, market) in enumerate(uni, 1):
         close = fetch_close(code, start)
         rl = weighted_return(close, LONG_W)
@@ -116,8 +118,14 @@ def main():
             fail += 1
         else:
             ok += 1
+            # LAG 거래일 전 시점의 RS (시계열을 잘라 동일 산식 재계산)
+            prev = close.iloc[:-LAG] if (close is not None and len(close) > LAG + 25) else None
+            rlp = weighted_return(prev, LONG_W);  rsp = weighted_return(prev, SHORT_W)
+            if np.isnan(rlp): rlp = rl
+            if np.isnan(rsp): rsp = rs_
             recs.append({"code": code, "name": name, "market": market,
-                         "rawLong": rl, "rawShort": rs_})
+                         "rawLong": rl, "rawShort": rs_,
+                         "rawLongPrev": rlp, "rawShortPrev": rsp})
         if i % 100 == 0:
             print(f"  ...{i}/{len(uni)}  (ok {ok} / fail {fail})")
         time.sleep(0.05)  # 예의상 throttle
@@ -126,14 +134,22 @@ def main():
         print("[error] 가격을 가져온 종목이 없습니다."); sys.exit(1)
 
     df = pd.DataFrame(recs)
-    # 백분위(1~99)와 z점수(코멧 축, 보기 좋게 *10 스케일)
-    df["longRS"]  = (df["rawLong"].rank(pct=True) * 98 + 1).round().astype(int)
-    df["shortRS"] = (df["rawShort"].rank(pct=True) * 98 + 1).round().astype(int)
-    def zscale(s): 
+    def zscale(s):
         sd = s.std(ddof=0) or 1.0
         return ((s - s.mean()) / sd * 10).clip(-40, 40)
-    df["longZ"]  = zscale(df["rawLong"]).round(1)
-    df["shortZ"] = zscale(df["rawShort"]).round(1)
+    def pct99(s):
+        return (s.rank(pct=True) * 98 + 1).round().astype(int)
+    # 현재 RS
+    df["longRS"]  = pct99(df["rawLong"])
+    df["shortRS"] = pct99(df["rawShort"])
+    df["longZ"]   = zscale(df["rawLong"]).round(1)
+    df["shortZ"]  = zscale(df["rawShort"]).round(1)
+    # LAG일 전 RS → Δ(모멘텀 변화) + 이전 위치(움직임 화살표용)
+    lp = pct99(df["rawLongPrev"]);  sp = pct99(df["rawShortPrev"])
+    df["dLong"]   = (df["longRS"]  - lp).astype(int)
+    df["dShort"]  = (df["shortRS"] - sp).astype(int)
+    df["pLongZ"]  = zscale(df["rawLongPrev"]).round(1)
+    df["pShortZ"] = zscale(df["rawShortPrev"]).round(1)
     def cls(r):
         L, S = r["longZ"], r["shortZ"]
         if L >= 0 and S >= 0: return "lead"
@@ -145,8 +161,10 @@ def main():
     payload = {
         "updated": datetime.now().isoformat(timespec="minutes"),
         "count": int(len(df)),
+        "lag": LAG,
         "weights": {"long": LONG_W, "short": SHORT_W},
-        "items": df[["code","name","market","longZ","shortZ","longRS","shortRS","class"]]
+        "items": df[["code","name","market","longZ","shortZ","longRS","shortRS",
+                     "class","dLong","dShort","pLongZ","pShortZ"]]
                    .sort_values(["longRS","shortRS"], ascending=False)
                    .to_dict(orient="records"),
     }
